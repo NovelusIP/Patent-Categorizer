@@ -22,6 +22,10 @@ def init_cache():
         )
         """)
 
+# PatentsView API endpoints
+LEGACY_URL = "https://api.patentsview.org/patents/query"
+SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
+
 def normalize_patent_number(patent_input, patent_type):
     """
     Normalize patent numbers for API queries
@@ -138,7 +142,13 @@ def query_patent(patent_input, patent_type):
         query["f"] = [f.replace("patent_id", "patent_number") for f in fields]  # Legacy API uses different field names
         
         try:
-            print(f"Trying legacy API: {query}")
+            print(f"Trying legacy API: {json.dumps(query, indent=2)}")
+            
+            # Validate query structure before sending
+            if not isinstance(query.get("q"), dict):
+                print(f"Invalid query structure, skipping: {query}")
+                continue
+                
             response = requests.post(LEGACY_URL, json=query, timeout=10)
             print(f"Legacy API Response Status: {response.status_code}")
             
@@ -159,7 +169,10 @@ def query_patent(patent_input, patent_type):
                 print(f"Legacy API Error: {response.status_code}, {response.text[:200]}")
                 
         except requests.exceptions.RequestException as e:
-            print(f"Legacy API Exception: {e}")
+            print(f"Legacy API RequestException: {e}")
+            continue
+        except Exception as e:
+            print(f"Legacy API Unexpected Exception: {e}")
             continue
     
     print(f"All API attempts failed for {patent_type} {normalized_number}")
@@ -402,3 +415,21 @@ if patent_input:
                 # Show full JSON in expander
                 with st.expander("View Full JSON Response"):
                     st.json(gpt_result)
+
+# Debug section (only show when debug is enabled)
+if show_debug:
+    st.subheader("🔧 Debug Tools")
+    if st.button("Test API Connection"):
+        try:
+            # Simple test to see if APIs are reachable
+            test_response = requests.get("https://api.patentsview.org", timeout=5)
+            st.success(f"PatentsView API reachable. Status: {test_response.status_code}")
+        except Exception as e:
+            st.error(f"API connection test failed: {e}")
+        
+        try:
+            # Test the normalize function
+            test_normalized = normalize_patent_number("US6172354B1", "Granted Patent")
+            st.info(f"Number normalization test: 'US6172354B1' → {test_normalized}")
+        except Exception as e:
+            st.error(f"Normalization test failed: {e}")
