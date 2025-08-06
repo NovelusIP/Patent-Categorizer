@@ -13,7 +13,7 @@ MODEL = "llama3-70b-8192"
 st.set_page_config(page_title="Patent Categorizer (Groq)", layout="centered")
 st.title("🔍 Patent Categorization Tool (Open Source LLM via Groq)")
 
-st.write(f"🔑 API Key loaded: {GROQ_API_KEY[:10]}..." if GROQ_API_KEY else "❌ API Key not loaded")
+st.write(f"🔑 API Key loaded: {'Yes' if GROQ_API_KEY else 'No'}")
 st.write(f"🧠 Model in use: {MODEL}")
 
 DB_FILE = "patents_cache.db"
@@ -186,16 +186,16 @@ if st.button("Submit"):
             st.subheader("📄 Patent Metadata")
             st.json(patent)
 
-            st.subheader("🤖 LLM Categorization Attempt")
             llm_result, llm_error = try_llm_categorization(title, abstract)
 
             if llm_result:
+                st.subheader("🤖 LLM Categorization Result")
                 st.success("✅ LLM categorization successful")
                 st.json(llm_result)
             else:
-                st.warning("⚠️ LLM unavailable or failed. Falling back to built-in categorization.")
+                st.subheader("🔁 Fallback Categorization (LLM unavailable)")
+                st.info("Using fallback logic due to LLM failure.")
 
-                st.subheader("🔍 Fallback Categorization Result")
                 fallback_result = {
                     "title": title,
                     "abstract": abstract,
@@ -218,6 +218,5 @@ if st.button("Submit"):
                 }
                 st.json(fallback_result)
 
-                # Optional debug info
                 with st.expander("LLM Failure Details"):
                     st.code(llm_error)
