@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # Load API key
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or st.secrets.get("OPENROUTER_API_KEY")
-MODEL = "meta-llama/llama-3-70b-instruct"
+MODEL = "openchat/openchat-3.5-0106"
 
 st.set_page_config(page_title="Patent Categorizer (OpenRouter)", layout="centered")
 st.title("🔍 Patent Categorization Tool (Open Source LLM)")
