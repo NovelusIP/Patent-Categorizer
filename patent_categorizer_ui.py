@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 
 # Load API key
 load_dotenv()
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY") or st.secrets.get("TOGETHER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or st.secrets.get("OPENROUTER_API_KEY")
+MODEL = "meta-llama/llama-3-70b-instruct"
 
 DB_FILE = "patents_cache.db"
 SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
@@ -46,9 +47,13 @@ def query_patent(patent_input, patent_type):
         with sqlite3.connect(DB_FILE) as conn:
             row = conn.execute("SELECT data_json FROM patent_cache WHERE patent_number=?", (cache_key,)).fetchone()
             if row:
+                print("[DEBUG] Cache HIT")
                 return json.loads(row[0])
+            else:
+                print("[DEBUG] Cache MISS")
     except Exception as e:
         st.error(f"❌ Cache error: {e}")
+        print(f"[DEBUG] Cache error: {e}")
 
     query = {
         "q": f"{field_type}:{normalized_number}",
@@ -61,10 +66,14 @@ def query_patent(patent_input, patent_type):
     }
 
     try:
+        print(f"[DEBUG] Querying PatentsView API with:\n{json.dumps(query, indent=2)}")
         response = requests.post(SEARCH_URL, json=query, timeout=10)
+        print(f"[DEBUG] Status code: {response.status_code}")
+
         if response.status_code == 200:
             data = response.json()
             if "patents" in data and data["patents"]:
+                print("[DEBUG] Patent data found.")
                 normalized_data = {"patents": []}
                 for p in data["patents"]:
                     normalized_patent = {
@@ -103,18 +112,18 @@ def query_patent(patent_input, patent_type):
         st.error(f"❌ Unexpected error: {e}")
         return None
 
-# --- LLM API Call ---
-def call_together_llama3(prompt):
-    if not TOGETHER_API_KEY:
-        raise Exception("Together API key not found. Please set TOGETHER_API_KEY in .env or Streamlit secrets.")
+# --- OpenRouter LLM Call ---
+def call_openrouter_llm(prompt):
+    if not OPENROUTER_API_KEY:
+        raise Exception("OpenRouter API key not found. Please set it in .env or Streamlit secrets.")
 
-    url = "https://api.together.xyz/v1/chat/completions"
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {TOGETHER_API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "meta-llama/Meta-Llama-3-70B-Instruct-Turbo",
+        "model": MODEL,
         "messages": [
             {"role": "system", "content": "You are a patent analyst. Always return valid JSON."},
             {"role": "user", "content": prompt}
@@ -127,7 +136,7 @@ def call_together_llama3(prompt):
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]["content"]
     else:
-        raise Exception(f"Together API Error: {response.status_code}, {response.text}")
+        raise Exception(f"OpenRouter API Error: {response.status_code}, {response.text}")
 
 # --- LLM Categorization ---
 def categorize_with_llm(patent_data):
@@ -161,7 +170,7 @@ Return ONLY a valid JSON object with these exact keys:
 }}
 """
     try:
-        response_text = call_together_llama3(prompt).strip()
+        response_text = call_openrouter_llm(prompt).strip()
         if response_text.startswith('```json'):
             response_text = response_text[7:]
         if response_text.endswith('```'):
@@ -177,13 +186,13 @@ Return ONLY a valid JSON object with these exact keys:
         return {"error": str(e)}
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Patent Categorizer (LLaMA 3 via Together.ai)", layout="centered")
-st.title("🔍 Patent Categorization Tool (Open Source LLM)")
+st.set_page_config(page_title="Patent Categorizer (LLaMA 3 via OpenRouter)", layout="centered")
+st.title("🔍 Patent Categorization Tool (Open Source LLM via OpenRouter)")
 
 init_cache()
 
 patent_type = st.selectbox("Select patent type:", ["Granted Patent", "Patent Application"],
-                           help="Granted patents have numbers like 6172354. Applications have numbers like 20230123456 or 16/123,456")
+                           help="Granted patents have numbers like 6172354. Applications like 20230123456 or 16/123,456")
 
 col1, col2 = st.columns([3, 1])
 with col1:
