@@ -12,10 +12,12 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 MODEL = "llama3-70b-8192"
 
 st.set_page_config(page_title="Patent Categorizer (Groq)", layout="centered")
-st.title("🔍 Patent Categorization Tool (Open Source LLM via Groq)")
+st.markdown("""
+    <h2 style='font-family: Arial; color: #003366;'>Patent Categorization Tool</h2>
+""", unsafe_allow_html=True)
 
-st.write(f"🔑 API Key loaded: {'Yes' if GROQ_API_KEY else 'No'}")
-st.write(f"🧠 Model in use: {MODEL}")
+st.markdown(f"<p style='font-size:14px;'>API Key loaded: <strong>{'Yes' if GROQ_API_KEY else 'No'}</strong></p>", unsafe_allow_html=True)
+st.markdown(f"<p style='font-size:14px;'>Model in use: <strong>{MODEL}</strong></p>", unsafe_allow_html=True)
 
 DB_FILE = "patents_cache.db"
 SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
@@ -71,7 +73,8 @@ def scrape_google_patents(patent_number):
         abstract = soup.find("meta", {"name": "DC.description"})
         return {
             "title": title["content"] if title else "",
-            "abstract": abstract["content"] if abstract else ""
+            "abstract": abstract["content"] if abstract else "",
+            "source": "google_patents"
         }, None
     except Exception as e:
         return None, f"Scraping error: {e}"
@@ -87,7 +90,7 @@ def query_patent(patent_input, patent_type):
             if row:
                 return json.loads(row[0])
     except Exception as e:
-        st.error(f"❌ Cache error: {e}")
+        st.error(f"Cache error: {e}")
 
     query = {
         "q": f"{field_type}:{normalized_number}",
@@ -100,40 +103,48 @@ def query_patent(patent_input, patent_type):
         "sort": [{"patent_date": "desc"}]
     }
 
+    headers = {
+        "Content-Type": "application/json"
+    }
+
     try:
-        response = requests.post(SEARCH_URL, json=query, timeout=10)
+        response = requests.post(SEARCH_URL, headers=headers, json=query, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if "patents" in data and data["patents"]:
                 return {"patents": data["patents"]}
             else:
-                st.warning("🔁 PatentsView returned no data, falling back to Google Patents scraping.")
+                st.info("PatentsView returned no results. Falling back to Google Patents.")
                 fallback_data, scrape_error = scrape_google_patents(normalized_number)
                 if fallback_data:
-                    return {"patents": [{
-                        "patent_number": normalized_number,
-                        "patent_title": fallback_data["title"],
-                        "patent_abstract": fallback_data["abstract"],
-                        "source": "google_patents"
-                    }]}
+                    return {"patents": [
+                        {
+                            "patent_number": normalized_number,
+                            "patent_title": fallback_data["title"],
+                            "patent_abstract": fallback_data["abstract"],
+                            "source": "google_patents"
+                        }
+                    ]}
                 else:
                     st.error(f"Google Patents fallback failed: {scrape_error}")
                     return None
         else:
-            st.warning("🔁 PatentsView API failed, falling back to Google Patents scraping.")
+            st.warning("PatentsView API failed. Falling back to Google Patents.")
             fallback_data, scrape_error = scrape_google_patents(normalized_number)
             if fallback_data:
-                return {"patents": [{
-                    "patent_number": normalized_number,
-                    "patent_title": fallback_data["title"],
-                    "patent_abstract": fallback_data["abstract"],
-                    "source": "google_patents"
-                }]}
+                return {"patents": [
+                    {
+                        "patent_number": normalized_number,
+                        "patent_title": fallback_data["title"],
+                        "patent_abstract": fallback_data["abstract"],
+                        "source": "google_patents"
+                    }
+                ]}
             else:
                 st.error(f"Google Patents fallback failed: {scrape_error}")
                 return None
     except Exception as e:
-        st.error(f"❌ Query error: {e}")
+        st.error(f"Query error: {e}")
         return None
 
 # UI
@@ -145,8 +156,40 @@ if st.button("Submit"):
     with st.spinner("Fetching and analyzing patent data..."):
         data = query_patent(patent_input, patent_type)
         if not data:
-            st.error("❌ Patent not found or data error.")
+            st.error("Patent not found or data error.")
         else:
             patent = data['patents'][0]
-            st.subheader("📄 Patent Metadata")
+            if patent.get("source") == "google_patents":
+                st.warning("Using Google Patents fallback data due to PatentsView API failure.")
+
+            st.markdown("""
+                <h4 style='color: #1a1a1a;'>Patent Analysis</h4>
+            """, unsafe_allow_html=True)
             st.json(patent)
+
+            if not GROQ_API_KEY:
+                st.warning("GROQ API key missing. Skipping LLM categorization.")
+            else:
+                try:
+                    headers = {
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    prompt = f"Categorize the following patent: {patent['patent_title']}\n\nAbstract: {patent['patent_abstract']}"
+                    payload = {
+                        "model": MODEL,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 500
+                    }
+                    response = requests.post(GROQ_URL, headers=headers, json=payload)
+                    if response.status_code == 200:
+                        result = response.json()["choices"][0]["message"]["content"]
+                        st.subheader("LLM Categorization Result")
+                        st.markdown(result)
+                    else:
+                        st.warning("LLM access denied (403). Using fallback only.")
+                except Exception as e:
+                    st.error(f"LLM call failed: {e}. Using fallback only.")
