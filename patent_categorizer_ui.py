@@ -7,13 +7,13 @@ from dotenv import load_dotenv
 
 # Load API key
 load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or st.secrets.get("OPENROUTER_API_KEY")
-MODEL = "openchat/openchat-3.5-0106"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+MODEL = "llama3-70b-8192"
 
-st.set_page_config(page_title="Patent Categorizer (OpenRouter)", layout="centered")
-st.title("🔍 Patent Categorization Tool (Open Source LLM)")
+st.set_page_config(page_title="Patent Categorizer (Groq)", layout="centered")
+st.title("🔍 Patent Categorization Tool (Open Source LLM via Groq)")
 
-st.write(f"🔑 API Key loaded: {OPENROUTER_API_KEY[:10]}..." if OPENROUTER_API_KEY else "❌ API Key not loaded")
+st.write(f"🔑 API Key loaded: {GROQ_API_KEY[:10]}..." if GROQ_API_KEY else "❌ API Key not loaded")
 st.write(f"🧠 Model in use: {MODEL}")
 
 DB_FILE = "patents_cache.db"
@@ -119,14 +119,14 @@ def query_patent(patent_input, patent_type):
         st.error(f"❌ Unexpected error: {e}")
         return None
 
-# --- OpenRouter LLM Call ---
-def call_openrouter_llm(prompt):
-    if not OPENROUTER_API_KEY:
-        raise Exception("OpenRouter API key not found. Please set it in .env or Streamlit secrets.")
+# --- Groq LLM Call ---
+def call_groq_llm(prompt):
+    if not GROQ_API_KEY:
+        raise Exception("Groq API key not found. Please set it in .env or Streamlit secrets.")
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -139,18 +139,15 @@ def call_openrouter_llm(prompt):
         "max_tokens": 1024
     }
 
-    print(f"[DEBUG] Sending request to OpenRouter...")
-    print(f"[DEBUG] Headers: {headers}")
-    print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)[:300]}")
-
+    print(f"[DEBUG] Sending request to Groq...")
     response = requests.post(url, headers=headers, json=payload)
-    print(f"[DEBUG] OpenRouter status: {response.status_code}")
-    print(f"[DEBUG] OpenRouter response: {response.text[:300]}")
+    print(f"[DEBUG] Groq status: {response.status_code}")
+    print(f"[DEBUG] Groq response: {response.text[:300]}")
 
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]["content"]
     else:
-        raise Exception(f"OpenRouter API Error: {response.status_code}, {response.text}")
+        raise Exception(f"Groq API Error: {response.status_code}, {response.text}")
 
 # --- Categorization with LLM ---
 def categorize_with_llm(patent_data):
@@ -176,7 +173,7 @@ Return ONLY a valid JSON object with these exact keys:
 }}
 """
     try:
-        response_text = call_openrouter_llm(prompt)
+        response_text = call_groq_llm(prompt)
         response_text = response_text.strip().removeprefix("```json").removesuffix("```").strip()
         return json.loads(response_text)
     except json.JSONDecodeError as e:
