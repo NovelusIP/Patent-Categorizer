@@ -10,6 +10,7 @@ load_dotenv()
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY") or st.secrets.get("TOGETHER_API_KEY")
 
 DB_FILE = "patents_cache.db"
+SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
 
 # --- Initialize SQLite Cache ---
 def init_cache():
@@ -36,9 +37,7 @@ def normalize_patent_number(patent_input, patent_type):
         clean_input = clean_input.replace("US", "").replace("B1", "").replace("B2", "").replace("A1", "")
         return clean_input.strip(), "patent_number"
 
-# --- Query PatentsView API ---
-LEGACY_URL = "https://api.patentsview.org/patents/query"
-
+# --- Query New PatentsView API ---
 def query_patent(patent_input, patent_type):
     normalized_number, field_type = normalize_patent_number(patent_input, patent_type)
     cache_key = f"{patent_type}_{normalized_number}"
@@ -47,90 +46,64 @@ def query_patent(patent_input, patent_type):
         with sqlite3.connect(DB_FILE) as conn:
             row = conn.execute("SELECT data_json FROM patent_cache WHERE patent_number=?", (cache_key,)).fetchone()
             if row:
-                print("[DEBUG] Cache HIT")
                 return json.loads(row[0])
-            else:
-                print("[DEBUG] Cache MISS")
     except Exception as e:
         st.error(f"❌ Cache error: {e}")
-        print(f"[DEBUG] Cache error: {e}")
 
-    fields = [
-        "patent_id", "patent_number", "patent_title", "patent_abstract", "patent_date",
-        "application_number", "app_date", "assignee_organization", "inventor_name_first", "inventor_name_last",
-        "publication_number", "publication_date"
-    ]
+    query = {
+        "q": f"{field_type}:{normalized_number}",
+        "fl": [
+            "patent_id", "patent_number", "patent_title", "patent_abstract", "patent_date",
+            "application_number", "app_date", "assignee_organization", "inventor_name_first", "inventor_name_last",
+            "publication_number", "publication_date"
+        ],
+        "sort": [{"patent_date": "desc"}]
+    }
 
-    search_queries = []
-    if patent_type == "Patent Application":
-        if field_type == "publication_number":
-            search_queries = [{"q": {"_eq": {"publication_number": normalized_number}}}]
-        else:
-            search_queries = [{"q": {"_eq": {"application_number": normalized_number}}}]
-    else:
-        search_queries = [{"q": {"_eq": {"patent_number": normalized_number}}}]
+    try:
+        response = requests.post(SEARCH_URL, json=query, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "patents" in data and data["patents"]:
+                normalized_data = {"patents": []}
+                for p in data["patents"]:
+                    normalized_patent = {
+                        "patent_number": p.get("patent_id") or p.get("patent_number") or p.get("publication_number"),
+                        "patent_title": p.get("patent_title"),
+                        "patent_abstract": p.get("patent_abstract"),
+                        "patent_date": p.get("patent_date") or p.get("publication_date"),
+                        "filing_date": p.get("app_date"),
+                        "application_number": p.get("application_number"),
+                        "publication_number": p.get("publication_number"),
+                        "assignee_organization": p.get("assignee_organization"),
+                        "inventor_first_name": p.get("inventor_name_first"),
+                        "inventor_last_name": p.get("inventor_name_last"),
+                        "patent_type": patent_type
+                    }
+                    normalized_data["patents"].append(normalized_patent)
 
-    for query in search_queries:
-        query["f"] = fields
-        try:
-            print(f"[DEBUG] Querying PatentsView legacy API with:\n{json.dumps(query, indent=2)}")
-            response = requests.post(LEGACY_URL, json=query, timeout=10)
-            print(f"[DEBUG] Status code: {response.status_code}")
-
-            if response.status_code == 200:
-                data = response.json()
-                if "patents" in data and data["patents"]:
-                    print("[DEBUG] Patent data found.")
-                    for p in data["patents"]:
-                        p["patent_type"] = patent_type
-
-                    normalized_data = {"patents": []}
-                    for p in data["patents"]:
-                        normalized_patent = {
-                            "patent_number": p.get("patent_id") or p.get("patent_number") or p.get("publication_number"),
-                            "patent_title": p.get("patent_title"),
-                            "patent_abstract": p.get("patent_abstract"),
-                            "patent_date": p.get("patent_date") or p.get("publication_date"),
-                            "filing_date": p.get("app_date"),
-                            "application_number": p.get("application_number"),
-                            "publication_number": p.get("publication_number"),
-                            "assignee_organization": p.get("assignee_organization"),
-                            "inventor_first_name": p.get("inventor_name_first"),
-                            "inventor_last_name": p.get("inventor_name_last"),
-                            "patent_type": patent_type
-                        }
-                        normalized_data["patents"].append(normalized_patent)
-
-                    with sqlite3.connect(DB_FILE) as conn:
-                        conn.execute("REPLACE INTO patent_cache (patent_number, data_json) VALUES (?, ?)",
-                                     (cache_key, json.dumps(normalized_data)))
-                    return normalized_data
-                else:
-                    st.warning(f"⚠️ No patent data found for '{normalized_number}' ({field_type}).")
-                    print(f"[DEBUG] Empty result for query:\n{json.dumps(query, indent=2)}")
-                    return None
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute("REPLACE INTO patent_cache (patent_number, data_json) VALUES (?, ?)",
+                                 (cache_key, json.dumps(normalized_data)))
+                return normalized_data
             else:
-                st.error(f"❌ API error ({response.status_code}): {response.text[:300]}")
-                print(f"[DEBUG] API error {response.status_code}: {response.text[:300]}")
+                st.warning(f"⚠️ No patent data found for '{normalized_number}' ({field_type}).")
                 return None
-
-        except requests.exceptions.Timeout:
-            st.error("❌ Request timed out while querying PatentsView API.")
-            print("[DEBUG] Timeout error.")
-            return None
-        except requests.exceptions.RequestException as e:
-            st.error(f"❌ Network error: {e}")
-            print(f"[DEBUG] Network error: {e}")
-            return None
-        except Exception as e:
-            st.error(f"❌ Unexpected error: {e}")
-            print(f"[DEBUG] Exception: {e}")
+        else:
+            st.error(f"❌ API error ({response.status_code}): {response.text[:300]}")
             return None
 
-    st.warning("⚠️ All attempts to retrieve patent data failed. Please double-check the number and format.")
-    print(f"[DEBUG] All attempts failed for: {normalized_number}")
-    return None
+    except requests.exceptions.Timeout:
+        st.error("❌ Request timed out while querying PatentsView API.")
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Network error: {e}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        return None
 
+# --- LLM API Call ---
 def call_together_llama3(prompt):
     if not TOGETHER_API_KEY:
         raise Exception("Together API key not found. Please set TOGETHER_API_KEY in .env or Streamlit secrets.")
@@ -156,6 +129,7 @@ def call_together_llama3(prompt):
     else:
         raise Exception(f"Together API Error: {response.status_code}, {response.text}")
 
+# --- LLM Categorization ---
 def categorize_with_llm(patent_data):
     patent = patent_data['patents'][0]
     title = patent.get('patent_title', '')
