@@ -193,7 +193,7 @@ if st.button("Submit"):
                 st.success("✅ LLM categorization successful")
                 st.json(llm_result)
             else:
-                st.warning(f"⚠️ LLM failed: {llm_error}\nUsing fallback categorization.")
+                st.warning("⚠️ LLM unavailable or failed. Falling back to built-in categorization.")
 
                 st.subheader("🔍 Fallback Categorization Result")
                 fallback_result = {
@@ -217,3 +217,7 @@ if st.button("Submit"):
                     "source": "fallback"
                 }
                 st.json(fallback_result)
+
+                # Optional debug info
+                with st.expander("LLM Failure Details"):
+                    st.code(llm_error)
