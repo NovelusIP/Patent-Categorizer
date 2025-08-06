@@ -1,6 +1,6 @@
 # Ignore secrets and environment configs
 .env
-.streamlit/secrets.toml
+
 
 # Ignore Python cache
 __pycache__/
