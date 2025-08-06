@@ -18,6 +18,19 @@ st.write(f"🧠 Model in use: {MODEL}")
 
 DB_FILE = "patents_cache.db"
 SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+CPC_SECTIONS = {
+    "A": "Human Necessities",
+    "B": "Performing Operations; Transporting",
+    "C": "Chemistry; Metallurgy",
+    "D": "Textiles; Paper",
+    "E": "Fixed Constructions",
+    "F": "Mechanical Engineering; Lighting; Heating; Weapons; Blasting",
+    "G": "Physics",
+    "H": "Electricity",
+    "Y": "General Tagging of New Technologies"
+}
 
 # --- Initialize SQLite Cache ---
 def init_cache():
@@ -53,34 +66,26 @@ def query_patent(patent_input, patent_type):
         with sqlite3.connect(DB_FILE) as conn:
             row = conn.execute("SELECT data_json FROM patent_cache WHERE patent_number=?", (cache_key,)).fetchone()
             if row:
-                print("[DEBUG] Cache HIT")
                 return json.loads(row[0])
-            else:
-                print("[DEBUG] Cache MISS")
     except Exception as e:
         st.error(f"❌ Cache error: {e}")
-        print(f"[DEBUG] Cache error: {e}")
 
     query = {
         "q": f"{field_type}:{normalized_number}",
         "fl": [
             "patent_id", "patent_number", "patent_title", "patent_abstract", "patent_date",
             "application_number", "app_date", "assignee_organization", "inventor_name_first", "inventor_name_last",
-            "publication_number", "publication_date"
+            "publication_number", "publication_date", "cpc_subgroup_id", "ipc_class_symbol", "uspc_class",
+            "patent_priority_date", "patent_num_cited_by_us_patents", "claim_statement"
         ],
         "sort": [{"patent_date": "desc"}]
     }
 
     try:
-        print(f"[DEBUG] Querying PatentsView API with:\n{json.dumps(query, indent=2)}")
         response = requests.post(SEARCH_URL, json=query, timeout=10)
-        print(f"[DEBUG] Status code: {response.status_code}")
-        print(f"[DEBUG] Response body: {response.text[:300]}")
-
         if response.status_code == 200:
             data = response.json()
             if "patents" in data and data["patents"]:
-                print("[DEBUG] Patent data found.")
                 normalized_data = {"patents": []}
                 for p in data["patents"]:
                     normalized_patent = {
@@ -89,11 +94,17 @@ def query_patent(patent_input, patent_type):
                         "patent_abstract": p.get("patent_abstract"),
                         "patent_date": p.get("patent_date") or p.get("publication_date"),
                         "filing_date": p.get("app_date"),
+                        "priority_date": p.get("patent_priority_date"),
                         "application_number": p.get("application_number"),
                         "publication_number": p.get("publication_number"),
                         "assignee_organization": p.get("assignee_organization"),
                         "inventor_first_name": p.get("inventor_name_first"),
                         "inventor_last_name": p.get("inventor_name_last"),
+                        "cpc_codes": p.get("cpc_subgroup_id", []),
+                        "ipc_codes": p.get("ipc_class_symbol", []),
+                        "uspc_codes": p.get("uspc_class", []),
+                        "citations": p.get("patent_num_cited_by_us_patents"),
+                        "claims": p.get("claim_statement"),
                         "patent_type": patent_type
                     }
                     normalized_data["patents"].append(normalized_patent)
@@ -103,83 +114,58 @@ def query_patent(patent_input, patent_type):
                                  (cache_key, json.dumps(normalized_data)))
                 return normalized_data
             else:
-                st.warning(f"⚠️ No patent data found for '{normalized_number}' ({field_type}).")
                 return None
         else:
-            st.error(f"❌ API error ({response.status_code}): {response.text[:300]}")
+            st.error(f"❌ API error ({response.status_code}): {response.text}")
             return None
-
-    except requests.exceptions.Timeout:
-        st.error("❌ Request timed out while querying PatentsView API.")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error: {e}")
-        return None
     except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
+        st.error(f"❌ Query error: {e}")
         return None
 
-# --- Groq LLM Call ---
-def call_groq_llm(prompt):
-    if not GROQ_API_KEY:
-        raise Exception("Groq API key not found. Please set it in .env or Streamlit secrets.")
+# --- Parse CPC Codes ---
+def parse_cpc(cpc_list):
+    parsed = []
+    for code in cpc_list:
+        if not code or len(code) < 4:
+            continue
+        section = code[0]
+        class_ = code[1:3]
+        subclass = code[3]
+        rest = code[4:]
+        parsed.append({
+            "raw": code,
+            "section": section,
+            "section_name": CPC_SECTIONS.get(section, "Unknown"),
+            "class": class_,
+            "subclass": subclass,
+            "rest": rest
+        })
+    return parsed
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a patent analyst. Always return valid JSON."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2,
-        "max_tokens": 1024
-    }
-
-    print(f"[DEBUG] Sending request to Groq...")
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[DEBUG] Groq status: {response.status_code}")
-    print(f"[DEBUG] Groq response: {response.text[:300]}")
-
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    else:
-        raise Exception(f"Groq API Error: {response.status_code}, {response.text}")
-
-# --- Categorization with LLM ---
-def categorize_with_llm(patent_data):
-    patent = patent_data['patents'][0]
-    title = patent.get('patent_title', '')
-    abstract = patent.get('patent_abstract', '')
-    patent_number = patent.get('patent_number', '')
-
-    prompt = f"""
-You are a patent analyst. Given the patent title and abstract below, categorize the patent and provide analysis.
-
-Title: {title}
-Abstract: {abstract}
-
-Return ONLY a valid JSON object with these exact keys:
-{{
-    "technology_areas": ["area1", "area2"],
-    "primary_category": "main category",
-    "ipc_predicted": ["predicted IPC codes"],
-    "cpc_predicted": ["predicted CPC codes"],
-    "uspc_predicted": ["predicted USPC codes"],
-    "reasoning": "Brief explanation of categorization"
-}}
-"""
+# --- Try LLM Categorization ---
+def try_llm_categorization(title, abstract):
     try:
-        response_text = call_groq_llm(prompt)
-        response_text = response_text.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(response_text)
-    except json.JSONDecodeError as e:
-        return {"error": f"Failed to parse LLM response as JSON: {e}", "raw_response": response_text[:500]}
+        if not GROQ_API_KEY:
+            raise Exception("Missing API Key")
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a patent analyst. Always return valid JSON."},
+                {"role": "user", "content": f"Title: {title}\nAbstract: {abstract}\nReturn JSON with technology_areas, primary_category, cpc_predicted, ipc_predicted, reasoning."}
+            ]
+        }
+        response = requests.post(GROQ_URL, headers=headers, json=payload)
+        if response.status_code == 200:
+            return json.loads(response.json()["choices"][0]["message"]["content"]), None
+        else:
+            return None, f"LLM API Error {response.status_code}: {response.text}"
     except Exception as e:
-        return {"error": str(e)}
+        return None, f"LLM Exception: {str(e)}"
 
 # --- Streamlit UI ---
 init_cache()
@@ -188,23 +174,46 @@ patent_type = st.selectbox("Select patent type:", ["Granted Patent", "Patent App
 patent_input = st.text_input("Enter US Patent/Application Number:", placeholder="e.g., 6172354 or 20230123456")
 
 if st.button("Submit"):
-    with st.spinner("Fetching patent data and analyzing..."):
+    with st.spinner("Fetching and analyzing patent data..."):
         data = query_patent(patent_input, patent_type)
         if not data:
-            st.error("❌ Patent not found or API error.")
+            st.error("❌ Patent not found or data error.")
         else:
-            st.subheader("📄 Patent Metadata")
             patent = data['patents'][0]
-            st.write("**Title:**", patent.get("patent_title"))
-            st.write("**Abstract:**", patent.get("patent_abstract"))
-            st.write("**Filing Date:**", patent.get("filing_date"))
-            st.write("**Grant/Publication Date:**", patent.get("patent_date"))
+            title = patent.get("patent_title", "")
+            abstract = patent.get("patent_abstract", "")
 
-            st.subheader("🤖 AI Categorization")
-            result = categorize_with_llm(data)
-            if "error" in result:
-                st.error(f"LLM Error: {result['error']}")
-                if "raw_response" in result:
-                    st.code(result["raw_response"])
+            st.subheader("📄 Patent Metadata")
+            st.json(patent)
+
+            st.subheader("🤖 LLM Categorization Attempt")
+            llm_result, llm_error = try_llm_categorization(title, abstract)
+
+            if llm_result:
+                st.success("✅ LLM categorization successful")
+                st.json(llm_result)
             else:
-                st.json(result)
+                st.warning(f"⚠️ LLM failed: {llm_error}\nUsing fallback categorization.")
+
+                st.subheader("🔍 Fallback Categorization Result")
+                fallback_result = {
+                    "title": title,
+                    "abstract": abstract,
+                    "dates": {
+                        "filing_date": patent.get("filing_date"),
+                        "publication_date": patent.get("patent_date"),
+                        "priority_date": patent.get("priority_date")
+                    },
+                    "inventors": list(zip(
+                        patent.get("inventor_first_name", []),
+                        patent.get("inventor_last_name", [])
+                    )),
+                    "assignees": patent.get("assignee_organization", []),
+                    "cpc_codes": parse_cpc(patent.get("cpc_codes", [])),
+                    "ipc_codes": patent.get("ipc_codes", []),
+                    "uspc_codes": patent.get("uspc_codes", []),
+                    "citations": patent.get("citations"),
+                    "claims": patent.get("claims"),
+                    "source": "fallback"
+                }
+                st.json(fallback_result)
