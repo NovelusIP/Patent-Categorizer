@@ -10,6 +10,12 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or st.secrets.get("OPENROUTER_API_KEY")
 MODEL = "meta-llama/llama-3-70b-instruct"
 
+st.set_page_config(page_title="Patent Categorizer (OpenRouter)", layout="centered")
+st.title("🔍 Patent Categorization Tool (Open Source LLM)")
+
+st.write(f"🔑 API Key loaded: {OPENROUTER_API_KEY[:10]}..." if OPENROUTER_API_KEY else "❌ API Key not loaded")
+st.write(f"🧠 Model in use: {MODEL}")
+
 DB_FILE = "patents_cache.db"
 SEARCH_URL = "https://search.patentsview.org/api/v1/patent"
 
@@ -69,6 +75,7 @@ def query_patent(patent_input, patent_type):
         print(f"[DEBUG] Querying PatentsView API with:\n{json.dumps(query, indent=2)}")
         response = requests.post(SEARCH_URL, json=query, timeout=10)
         print(f"[DEBUG] Status code: {response.status_code}")
+        print(f"[DEBUG] Response body: {response.text[:300]}")
 
         if response.status_code == 200:
             data = response.json()
@@ -132,26 +139,25 @@ def call_openrouter_llm(prompt):
         "max_tokens": 1024
     }
 
+    print(f"[DEBUG] Sending request to OpenRouter...")
+    print(f"[DEBUG] Headers: {headers}")
+    print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)[:300]}")
+
     response = requests.post(url, headers=headers, json=payload)
+    print(f"[DEBUG] OpenRouter status: {response.status_code}")
+    print(f"[DEBUG] OpenRouter response: {response.text[:300]}")
+
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]["content"]
     else:
         raise Exception(f"OpenRouter API Error: {response.status_code}, {response.text}")
 
-# --- LLM Categorization ---
+# --- Categorization with LLM ---
 def categorize_with_llm(patent_data):
     patent = patent_data['patents'][0]
     title = patent.get('patent_title', '')
     abstract = patent.get('patent_abstract', '')
     patent_number = patent.get('patent_number', '')
-
-    with sqlite3.connect(DB_FILE) as conn:
-        row = conn.execute("SELECT gpt_json FROM patent_cache WHERE patent_number=?", (patent_number,)).fetchone()
-        if row and row[0]:
-            try:
-                return json.loads(row[0])
-            except json.JSONDecodeError:
-                pass
 
     prompt = f"""
 You are a patent analyst. Given the patent title and abstract below, categorize the patent and provide analysis.
@@ -170,76 +176,38 @@ Return ONLY a valid JSON object with these exact keys:
 }}
 """
     try:
-        response_text = call_openrouter_llm(prompt).strip()
-        if response_text.startswith('```json'):
-            response_text = response_text[7:]
-        if response_text.endswith('```'):
-            response_text = response_text[:-3]
-        result = json.loads(response_text.strip())
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("UPDATE patent_cache SET gpt_json=? WHERE patent_number=?",
-                         (json.dumps(result), patent_number))
-        return result
+        response_text = call_openrouter_llm(prompt)
+        response_text = response_text.strip().removeprefix("```json").removesuffix("```").strip()
+        return json.loads(response_text)
     except json.JSONDecodeError as e:
         return {"error": f"Failed to parse LLM response as JSON: {e}", "raw_response": response_text[:500]}
     except Exception as e:
         return {"error": str(e)}
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Patent Categorizer (LLaMA 3 via OpenRouter)", layout="centered")
-st.title("🔍 Patent Categorization Tool (Open Source LLM via OpenRouter)")
-
 init_cache()
 
-patent_type = st.selectbox("Select patent type:", ["Granted Patent", "Patent Application"],
-                           help="Granted patents have numbers like 6172354. Applications like 20230123456 or 16/123,456")
+patent_type = st.selectbox("Select patent type:", ["Granted Patent", "Patent Application"])
+patent_input = st.text_input("Enter US Patent/Application Number:", placeholder="e.g., 6172354 or 20230123456")
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    patent_input = st.text_input("Enter Patent Number:", placeholder="e.g., 6172354 or 20230123456",
-                                  help="Remove any US/B1/A1 formatting, just enter the core number.")
-with col2:
-    if st.button("Use Test Patent"):
-        patent_input = "6172354" if patent_type == "Granted Patent" else "20200123456"
-
-show_debug = st.checkbox("Show debug information")
-
-if patent_input:
-    with st.spinner("Fetching patent data..."):
-        result = query_patent(patent_input, patent_type)
-
-        if not result:
-            st.error("❌ Patent not found or error encountered.")
+if st.button("Submit"):
+    with st.spinner("Fetching patent data and analyzing..."):
+        data = query_patent(patent_input, patent_type)
+        if not data:
+            st.error("❌ Patent not found or API error.")
         else:
-            st.success("✅ Patent data retrieved.")
-            st.subheader("Patent Metadata")
-            st.json(result)
+            st.subheader("📄 Patent Metadata")
+            patent = data['patents'][0]
+            st.write("**Title:**", patent.get("patent_title"))
+            st.write("**Abstract:**", patent.get("patent_abstract"))
+            st.write("**Filing Date:**", patent.get("filing_date"))
+            st.write("**Grant/Publication Date:**", patent.get("patent_date"))
 
-            gpt_result = categorize_with_llm(result)
-
-            if "error" in gpt_result:
-                st.error(f"LLM Error: {gpt_result['error']}")
-                if "raw_response" in gpt_result:
-                    st.code(gpt_result["raw_response"])
+            st.subheader("🤖 AI Categorization")
+            result = categorize_with_llm(data)
+            if "error" in result:
+                st.error(f"LLM Error: {result['error']}")
+                if "raw_response" in result:
+                    st.code(result["raw_response"])
             else:
-                st.subheader("🤖 AI-Powered Categorization")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**Technology Areas:**")
-                    for area in gpt_result.get("technology_areas", []):
-                        st.write(f"• {area}")
-                    st.write("**Primary Category:**", gpt_result.get("primary_category", "N/A"))
-                with col2:
-                    st.write("**Predicted IPC Codes:**")
-                    for code in gpt_result.get("ipc_predicted", []):
-                        st.write(f"• {code}")
-                    st.write("**Predicted CPC Codes:**")
-                    for code in gpt_result.get("cpc_predicted", []):
-                        st.write(f"• {code}")
-                st.subheader("🧠 AI Reasoning")
-                st.write(gpt_result.get("reasoning", "No explanation provided."))
-                with st.expander("View Full JSON Response"):
-                    st.json(gpt_result)
-
-            if show_debug:
-                st.code(json.dumps(result, indent=2)[:1000])
+                st.json(result)
