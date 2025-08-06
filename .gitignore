@@ -1,0 +1,17 @@
+# Ignore secrets and environment configs
+.env
+.streamlit/secrets.toml
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore SQLite database file
+*.db
+
+# Ignore virtual environments
+venv/
+.env/
+
+# VSCode settings (optional)
+.vscode/
